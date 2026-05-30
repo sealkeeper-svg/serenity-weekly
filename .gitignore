@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.tool-results/
+.claude/
+tasks/
