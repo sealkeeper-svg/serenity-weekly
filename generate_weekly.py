@@ -124,12 +124,12 @@ def scrape_weekly_posts(monday: date, sunday: date) -> list[Post]:
 
     print("[Scraper] Opening profile...")
     bu("open", "https://x.com/aleabitoreddit", timeout=20)
-    time.sleep(3)
+    time.sleep(1.5)
 
     print("[Scraper] Scrolling and extracting...")
     out_of_range_count = 0
     for round_num in range(15):
-        raw = bu("eval", SCRAPE_JS, timeout=15)
+        raw = bu("eval", SCRAPE_JS, timeout=60)
         try:
             batch = _parse_raw_batch(raw)
             if not batch:
@@ -149,8 +149,11 @@ def scrape_weekly_posts(monday: date, sunday: date) -> list[Post]:
         except Exception as e:
             print(f"  [warn] Parse error round {round_num}: {e}")
 
-        bu("scroll", "down", "--amount", "4000", timeout=10)
-        time.sleep(3)
+        # Scroll page by page to trigger lazy loading
+        bu("scroll", "down", "--amount", "2000", timeout=10)
+        time.sleep(1.5)
+        bu("scroll", "down", "--amount", "2000", timeout=10)
+        time.sleep(1.5)
 
     all_posts = _dedupe(all_posts)
     all_posts = [p for p in all_posts if str(monday) <= p.date <= str(sunday)]
