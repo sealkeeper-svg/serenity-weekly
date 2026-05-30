@@ -116,14 +116,8 @@ SCRAPE_JS = (
 def scrape_weekly_posts(monday: date, sunday: date) -> list[Post]:
     all_posts: list[Post] = []
 
-    print("[Scraper] Connecting to browser...")
-    out = bu("connect", timeout=15)
-    if "connected" not in out.lower():
-        print("[Scraper] ERROR: Failed to connect")
-        return all_posts
-
     print("[Scraper] Opening profile...")
-    bu("open", "https://x.com/aleabitoreddit", timeout=20)
+    out = bu("--cdp-url", CDP_URL, "open", "https://x.com/aleabitoreddit", timeout=20)
     time.sleep(1.5)
 
     print("[Scraper] Scrolling and extracting...")
