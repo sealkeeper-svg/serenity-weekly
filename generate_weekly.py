@@ -43,13 +43,23 @@ def bu(*args: str, timeout: int = 30) -> str:
     return result.stdout or ""
 
 
-def get_next_week_info():
+def get_next_week_info(week_num: int | None = None):
     existing = [f for f in os.listdir(".") if re.match(r"^week\d+\.md$", f)]
     if not existing:
-        week_num = 1
+        target_week = 1
+    elif week_num is not None:
+        target_week = week_num
     else:
-        nums = [int(re.search(r"\d+", f).group()) for f in existing]
-        week_num = max(nums) + 1
+        nums = sorted(int(re.search(r"\d+", f).group()) for f in existing)
+        # Find first gap, or take max+1
+        target_week = nums[0]
+        for i, n in enumerate(nums):
+            expected = nums[0] + i
+            if n != expected:
+                target_week = expected
+                break
+        else:
+            target_week = nums[-1] + 1
 
     today = date.today()
     if today.weekday() == 6:
@@ -59,7 +69,7 @@ def get_next_week_info():
         monday = today - timedelta(days=today.weekday())
         sunday = monday + timedelta(days=6)
 
-    return week_num, monday, sunday
+    return target_week, monday, sunday
 
 
 def format_date(d: date) -> str:
@@ -193,10 +203,69 @@ def extract_stocks(text: str) -> list[str]:
     return re.findall(r"\$[A-Z]{1,6}(?:\.[A-Z]{1,3})?", text)
 
 
+def _generate_summary(posts: list[Post], monday: date, sunday: date) -> str:
+    """Generate a data-driven summary paragraph from top posts."""
+    if not posts:
+        return "本周暂无数据。"
+
+    stock_counts: dict[str, int] = {}
+    for p in posts:
+        for s in set(extract_stocks(p.text)) | set(p.mentioned_stocks):
+            stock_counts[s] = stock_counts.get(s, 0) + 1
+
+    top_stocks = sorted(stock_counts.items(), key=lambda x: -x[1])[:5]
+    top_texts = [p.text for p in posts[:5]]
+
+    # Find the highest-likes post
+    best = max(posts, key=lambda p: p.likes)
+    total_posts = len(posts)
+    total_likes = sum(p.likes for p in posts)
+    date_range = f"{format_date(monday)} – {format_date(sunday)}"
+
+    stock_str = "、".join(f"{s}（{c}次）" for s, c in top_stocks)
+
+    return (
+        f"本周（{date_range}）Serenity 共发布 {total_posts} 条高赞分析帖，"
+        f"累计获得 {total_likes:,} 赞。"
+        f"核心关注板块为 CPO 光子学与 AI 半导体供应链，"
+        f"提及最多的股票：{stock_str}。"
+        f"单帖最高赞 {best.likes:,}（{best.date}），"
+        f"主题：{best.text[:80]}..."
+    )
+
+
+def _generate_outlook(posts: list[Post]) -> str:
+    """Generate outlook from late-week posts."""
+    if not posts:
+        return "暂无展望数据。"
+
+    # Focus on posts from the last 2 days
+    late_posts = sorted(posts, key=lambda p: p.time, reverse=True)[:5]
+
+    stocks = set()
+    themes = []
+    for p in late_posts:
+        stocks.update(extract_stocks(p.text))
+        if "earnings" in p.text.lower() or "财报" in p.text:
+            themes.append("财报后续市场反应")
+        if "CHIPS" in p.text or "chips act" in p.text.lower():
+            themes.append("CHIPS Act 政策进展")
+        if "CPO" in p.text or "photonics" in p.text.lower():
+            themes.append("CPO/光子学供应链动态")
+
+    if not themes:
+        themes = ["继续关注 CPO 光子学产业链消息", "跟踪半导体财报和产能扩张信号"]
+
+    stock_list = "、".join(sorted(stocks)[:6]) if stocks else "—"
+    return f"重点关注：{stock_list}。预期方向：{'；'.join(themes[:4])}。"
+
+
 def generate_report(posts: list[Post], week_num: int, monday: date, sunday: date) -> str:
     long_posts = [p for p in posts if len(p.text) >= 100 and p.likes >= 400]
     long_posts.sort(key=lambda p: p.time, reverse=True)
 
+    summary = _generate_summary(long_posts, monday, sunday)
+    outlook = _generate_outlook(long_posts)
     company_rows = _build_company_table(long_posts)
     post_rows = _build_post_table(long_posts)
     date_range = f"{format_date(monday)} – {format_date(sunday)}"
@@ -209,7 +278,7 @@ def generate_report(posts: list[Post], week_num: int, monday: date, sunday: date
 
 ## 一、本周总述
 
-<!-- TODO: 手动补充或 AI 生成 -->
+{summary}
 
 ---
 
@@ -221,7 +290,7 @@ def generate_report(posts: list[Post], week_num: int, monday: date, sunday: date
 
 ## 三、下周展望
 
-<!-- TODO: 手动补充或 AI 生成 -->
+{outlook}
 
 ---
 
@@ -310,8 +379,52 @@ def main(dry_run: bool = False):
         print("[dry-run] Skipping git push")
 
 
+def catch_up():
+    """Generate reports for all missing weeks since week1."""
+    existing = sorted(
+        [int(re.search(r"\d+", f).group()) for f in os.listdir(".")
+         if re.match(r"^week\d+\.md$", f)]
+    )
+    if not existing:
+        print("No existing weeks found. Generating week1.")
+        main(dry_run="--dry-run" in sys.argv)
+        return
+
+    # Find gaps
+    missing = []
+    for i in range(existing[0], existing[-1] + 1):
+        if i not in existing:
+            missing.append(i)
+
+    if not missing:
+        print(f"All weeks present: {existing}")
+        return
+
+    print(f"Missing weeks: {missing}")
+    for week_num in missing:
+        print(f"\n=== Generating week{week_num} ===")
+        wnum, monday, sunday = get_next_week_info(week_num=week_num)
+        if not ensure_chrome_running():
+            print("Chrome not available, stopping.")
+            break
+        posts = scrape_weekly_posts(monday, sunday)
+        if not posts:
+            print(f"No posts for week{week_num}, skipping.")
+            continue
+        md = generate_report(posts, wnum, monday, sunday)
+        filename = write_report(md, wnum)
+        print(f"Generated {filename}")
+        if "--dry-run" not in sys.argv:
+            _git_push(filename, wnum, monday, sunday)
+
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
+    catchup = "--catch-up" in sys.argv
+
     if dry:
         print("[dry-run mode]")
-    main(dry_run=dry)
+    if catchup:
+        catch_up()
+    else:
+        main(dry_run=dry)
